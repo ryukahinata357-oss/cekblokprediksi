@@ -54,61 +54,67 @@ const getDomainName = (url) => {
 };
 
 /**
- * FUNGSI EKSTRAKSI DATA DARI JUDUL & DESKRIPSI
- * Memastikan Nama Pasaran dan Tanggal di ATAS (Judul) 
- * SAMA PERSIS dengan yang ada di BAWAH (Deskripsi)
+ * FUNGSI EKSTRAKSI & VALIDASI FORMAT JUDUL
+ * Memastikan adanya tanda strip (-) dan konsistensi data
  */
 function extractAndValidatePrediction(titleText, descText) {
-    // Regex untuk menangkap Nama Pasaran dan Tanggal
+    // Regex Capture Group: Memisahkan Nama Pasaran dan Tanggal
+    // Mengharapkan format: PREDIKSI TOGEL [NAMA] [TANGGAL] [BRAND]
     const regex = /PREDIKSI\s+TOGEL\s+(.+?)\s+(\d{1,2}\s+[A-Z]{3}\s+\d{4})/i;
+    const match = titleText.match(regex);
     
-    const titleMatch = titleText.match(regex);
-    if (!titleMatch) return null;
+    if (!match) return null;
 
-    const rawMarketTitle = titleMatch[1].trim();
-    const rawDateTitle = titleMatch[2].trim();
+    const rawMarket = match[1].trim();
+    const rawDate = match[2].trim();
 
-    // Normalisasi untuk pencocokan (Case insensitive, hapus spasi)
-    const normMarketTitle = rawMarketTitle.toLowerCase().replace(/[\s\-]/g, '');
-    const normDateTitle = rawDateTitle.toLowerCase().replace(/\s+/g, '').replace(/juni/g, 'jun').replace(/juli/g, 'jul').substring(0, 7);
-
-    // --- CEK KONSISTENSI DENGAN DESKRIPSI ---
-    let isConsistent = true;
-    let mismatchDetail = '';
-
-    // Cek apakah Nama Pasaran di Judul ada di Deskripsi
-    // Kita cari kata kunci pasaran di deskripsi (misal: "Oslo" harus ada di "Prediksi Togel Oslo Hari ini...")
-    const descLower = descText.toLowerCase();
-    const marketKeywords = rawMarketTitle.toLowerCase().split(/[\s\-]+/).filter(k => k.length > 2);
+    // --- VALIDASI 1: CEK TANDA STRIP (-) DI NAMA PASARAN ---
+    // Nama pasaran multi-kata wajib pakai strip (misal: SINGAPORE-TOTO)
+    // Nama satu kata boleh tanpa strip (misal: ROMA, OSLO)
+    const hasHyphen = rawMarket.includes('-');
+    const isMultiWord = /\s/.test(rawMarket); 
     
-    const isMarketInDesc = marketKeywords.every(keyword => descLower.includes(keyword));
-    
-    if (!isMarketInDesc) {
-        isConsistent = false;
-        mismatchDetail += `Nama pasaran "${rawMarketTitle}" tidak ditemukan dalam deskripsi. `;
+    let formatError = '';
+    if (isMultiWord && !hasHyphen) {
+        formatError = `Nama pasaran "${rawMarket}" seharusnya menggunakan tanda strip (-), contoh: "${rawMarket.replace(/\s+/g, '-')}"`;
     }
 
-    // Cek apakah Tanggal di Judul ada di Deskripsi
-    // Format deskripsi biasanya: "17 June 2026" atau "17 Jun 2026"
-    const dateParts = rawDateTitle.split(' '); // ["17", "JUN", "2026"]
+    // Normalisasi untuk pencocokan lintas situs
+    // Ubah semua spasi menjadi strip agar "SINGAPORE TOTO" == "SINGAPORE-TOTO"
+    const normalizedMarket = rawMarket.toUpperCase().replace(/\s+/g, '-').replace(/--+/g, '-');
+    
+    // Normalisasi tanggal ke format DDMMMYY
+    const normalizedDate = rawDate.toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/juni/g, 'jun')
+        .replace(/juli/g, 'jul')
+        .substring(0, 7);
+
+    // --- VALIDASI 2: CEK KONSISTENSI JUDUL VS DESKRIPSI ---
+    let consistencyError = '';
+    const descLower = descText.toLowerCase();
+    const marketKeywords = rawMarket.toLowerCase().split(/[\s\-]+/).filter(k => k.length > 2);
+    
+    const isMarketInDesc = marketKeywords.every(keyword => descLower.includes(keyword));
+    if (!isMarketInDesc) {
+        consistencyError = `Nama pasaran "${rawMarket}" tidak ditemukan dalam deskripsi.`;
+    }
+
+    const dateParts = rawDate.split(' ');
     const day = dateParts[0];
     const year = dateParts[2];
-    
-    // Cek kombinasi Hari + Tahun di deskripsi (lebih aman daripada cek bulan karena variasi Jun/June)
     const isDateInDesc = descLower.includes(`${day}`) && descLower.includes(`${year}`);
-
     if (!isDateInDesc) {
-        isConsistent = false;
-        mismatchDetail += `Tanggal "${rawDateTitle}" tidak konsisten dengan deskripsi. `;
+        consistencyError += ` Tanggal "${rawDate}" tidak konsisten dengan deskripsi.`;
     }
 
     return {
         rawTitle: titleText,
-        marketName: rawMarketTitle,
-        date: normDateTitle, // Format standar DDMMMYY
-        normMarket: normMarketTitle,
-        isConsistent: isConsistent,
-        mismatchDetail: mismatchDetail.trim()
+        marketName: rawMarket,
+        normMarket: normalizedMarket, // Versi seragam dengan strip
+        date: normalizedDate,
+        formatError: formatError,      // Error jika tidak ada strip
+        consistencyError: consistencyError.trim() // Error jika judul != deskripsi
     };
 }
 
@@ -135,11 +141,8 @@ async function scrapePredictionPage(baseUrl, marketId) {
         
         const predictions = [];
 
-        // Selector berdasarkan struktur Livewire di source code
-        // Kita loop per kartu prediksi (parent container)
         $('div.flex.flex-col.items-center.gap-4.px-8.py-6').each((i, cardEl) => {
             const titleText = $(cardEl).find('h4 a').text().trim();
-            // Ambil semua teks di paragraf deskripsi (biasanya ada di p.mt-1 atau p.text-sm)
             const descText = $(cardEl).find('p.mt-1, p.text-sm').first().text().trim();
 
             if (titleText) {
@@ -161,7 +164,7 @@ async function scrapePredictionPage(baseUrl, marketId) {
 }
 
 // ==========================================
-// VALIDASI KONTEN PREDIKSI (MAJORITY VOTE + CONSISTENCY CHECK)
+// VALIDASI KONTEN PREDIKSI (MAJORITY VOTE + FORMAT CHECK)
 // ==========================================
 function validatePredictionContent(marketName, siteResults, siteUrls) {
     const issues = [];
@@ -187,16 +190,30 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
         const missingSites = entries.filter(e => !e.item && e.hasData);
         const failedSites = entries.filter(e => !e.success || !e.hasData);
 
-        // SKENARIO 0: CEK INKONSISTENSI JUDUL VS DESKRIPSI (FITUR BARU!)
+        // SKENARIO 0A: CEK FORMAT JUDUL (WAJIB ADA STRIP -)
         presentSites.forEach(ps => {
-            if (!ps.item.isConsistent) {
+            if (ps.item.formatError) {
+                issues.push({
+                    market: marketName, 
+                    date: dateNorm, 
+                    culprit: ps.domain,
+                    status: 'FORMAT_ERROR',
+                    reference: `Judul Asli: "${ps.item.rawTitle}"`,
+                    detail: `FORMAT SALAH! ${ps.item.formatError}`
+                });
+            }
+        });
+
+        // SKENARIO 0B: CEK KONSISTENSI JUDUL VS DESKRIPSI
+        presentSites.forEach(ps => {
+            if (ps.item.consistencyError) {
                 issues.push({
                     market: marketName, 
                     date: dateNorm, 
                     culprit: ps.domain,
                     status: 'CONTENT_INCONSISTENT',
                     reference: `Judul: "${ps.item.rawTitle}"`,
-                    detail: `TIDAK KONSISTEN! ${ps.item.mismatchDetail}`
+                    detail: `TIDAK KONSISTEN! ${ps.item.consistencyError}`
                 });
             }
         });
@@ -224,24 +241,29 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
             });
         }
 
-        // SKENARIO 3: Cek Typo/Judul Tidak Standar (Hanya untuk situs yang konsisten)
-        const consistentSites = presentSites.filter(ps => ps.item.isConsistent);
+        // SKENARIO 3: CROSS-VALIDATION NAMA PASARAN (Menggunakan normMarket)
+        // Hanya bandingkan situs yang formatnya BENAR (tidak ada formatError)
+        const consistentSites = presentSites.filter(ps => !ps.item.formatError);
         
         if (consistentSites.length >= 2) {
-            const titleCounts = {};
+            const marketCounts = {};
             consistentSites.forEach(ps => {
-                titleCounts[ps.item.rawTitle] = (titleCounts[ps.item.rawTitle] || 0) + 1;
+                marketCounts[ps.item.normMarket] = (marketCounts[ps.item.normMarket] || 0) + 1;
             });
-
-            const majorityTitle = Object.keys(titleCounts).reduce((a, b) => titleCounts[a] > titleCounts[b] ? a : b);
+            
+            const majorityMarket = Object.keys(marketCounts).reduce((a, b) => marketCounts[a] > marketCounts[b] ? a : b);
+            const majorityCount = marketCounts[majorityMarket];
 
             consistentSites.forEach(ps => {
-                if (ps.item.rawTitle !== majorityTitle) {
+                // Jika nama pasaran ternormalisasi beda dengan mayoritas
+                if (ps.item.normMarket !== majorityMarket) {
                     issues.push({
-                        market: marketName, date: dateNorm, culprit: ps.domain,
-                        status: 'TITLE_MISMATCH',
-                        reference: `Judul Mayoritas: "${majorityTitle}"`,
-                        detail: `JUDUL TIDAK STANDAR! Situs ini menulis: "${ps.item.rawTitle}"`
+                        market: marketName, 
+                        date: dateNorm, 
+                        culprit: ps.domain,
+                        status: 'MARKET_NAME_MISMATCH',
+                        reference: `Standar Mayoritas: "${majorityMarket}" (${majorityCount}/${consistentSites.length} situs)`,
+                        detail: `NAMA PASARAN SALAH! Situs ini menulis: "${ps.item.marketName}" (Seharusnya sesuai standar mayoritas)`
                     });
                 }
             });
