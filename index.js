@@ -55,11 +55,8 @@ const getDomainName = (url) => {
 
 /**
  * FUNGSI EKSTRAKSI & VALIDASI FORMAT JUDUL
- * Memastikan adanya tanda strip (-) dan konsistensi data
  */
 function extractAndValidatePrediction(titleText, descText) {
-    // Regex Capture Group: Memisahkan Nama Pasaran dan Tanggal
-    // Mengharapkan format: PREDIKSI TOGEL [NAMA] [TANGGAL] [BRAND]
     const regex = /PREDIKSI\s+TOGEL\s+(.+?)\s+(\d{1,2}\s+[A-Z]{3}\s+\d{4})/i;
     const match = titleText.match(regex);
     
@@ -68,34 +65,25 @@ function extractAndValidatePrediction(titleText, descText) {
     const rawMarket = match[1].trim();
     const rawDate = match[2].trim();
 
-    // --- VALIDASI 1: CEK TANDA STRIP (-) DI NAMA PASARAN ---
-    // Nama pasaran multi-kata wajib pakai strip (misal: SINGAPORE-TOTO)
-    // Nama satu kata boleh tanpa strip (misal: ROMA, OSLO)
+    // Cek Format Strip (-) untuk multi-word market
     const hasHyphen = rawMarket.includes('-');
-    const isMultiWord = /\s/.test(rawMarket); 
+    const isMultiWord = /\s/.test(rawMarket);
     
     let formatError = '';
     if (isMultiWord && !hasHyphen) {
-        formatError = `Nama pasaran "${rawMarket}" seharusnya menggunakan tanda strip (-), contoh: "${rawMarket.replace(/\s+/g, '-')}"`;
+        formatError = `Nama pasaran "${rawMarket}" seharusnya menggunakan tanda strip (-)`;
     }
 
     // Normalisasi untuk pencocokan lintas situs
-    // Ubah semua spasi menjadi strip agar "SINGAPORE TOTO" == "SINGAPORE-TOTO"
     const normalizedMarket = rawMarket.toUpperCase().replace(/\s+/g, '-').replace(/--+/g, '-');
-    
-    // Normalisasi tanggal ke format DDMMMYY
-    const normalizedDate = rawDate.toLowerCase()
-        .replace(/\s+/g, '')
-        .replace(/juni/g, 'jun')
-        .replace(/juli/g, 'jul')
-        .substring(0, 7);
+    const normalizedDate = rawDate.toLowerCase().replace(/\s+/g, '').replace(/juni/g, 'jun').replace(/juli/g, 'jul').substring(0, 7);
 
-    // --- VALIDASI 2: CEK KONSISTENSI JUDUL VS DESKRIPSI ---
+    // Cek Konsistensi Judul vs Deskripsi
     let consistencyError = '';
     const descLower = descText.toLowerCase();
     const marketKeywords = rawMarket.toLowerCase().split(/[\s\-]+/).filter(k => k.length > 2);
-    
     const isMarketInDesc = marketKeywords.every(keyword => descLower.includes(keyword));
+    
     if (!isMarketInDesc) {
         consistencyError = `Nama pasaran "${rawMarket}" tidak ditemukan dalam deskripsi.`;
     }
@@ -104,6 +92,7 @@ function extractAndValidatePrediction(titleText, descText) {
     const day = dateParts[0];
     const year = dateParts[2];
     const isDateInDesc = descLower.includes(`${day}`) && descLower.includes(`${year}`);
+
     if (!isDateInDesc) {
         consistencyError += ` Tanggal "${rawDate}" tidak konsisten dengan deskripsi.`;
     }
@@ -111,10 +100,10 @@ function extractAndValidatePrediction(titleText, descText) {
     return {
         rawTitle: titleText,
         marketName: rawMarket,
-        normMarket: normalizedMarket, // Versi seragam dengan strip
+        normMarket: normalizedMarket,
         date: normalizedDate,
-        formatError: formatError,      // Error jika tidak ada strip
-        consistencyError: consistencyError.trim() // Error jika judul != deskripsi
+        formatError: formatError,
+        consistencyError: consistencyError.trim()
     };
 }
 
@@ -138,7 +127,6 @@ async function scrapePredictionPage(baseUrl, marketId) {
 
         const res = await client.get(`${fixedBase}/prediksi?market=${marketId}`);
         const $ = cheerio.load(res.data);
-        
         const predictions = [];
 
         $('div.flex.flex-col.items-center.gap-4.px-8.py-6').each((i, cardEl) => {
@@ -147,14 +135,11 @@ async function scrapePredictionPage(baseUrl, marketId) {
 
             if (titleText) {
                 const extracted = extractAndValidatePrediction(titleText, descText);
-                if (extracted) {
-                    predictions.push(extracted);
-                }
+                if (extracted) predictions.push(extracted);
             }
         });
 
         return { success: true, data: predictions };
-
     } catch (err) {
         return { 
             success: false, 
@@ -164,17 +149,15 @@ async function scrapePredictionPage(baseUrl, marketId) {
 }
 
 // ==========================================
-// VALIDASI KONTEN PREDIKSI (MAJORITY VOTE + FORMAT CHECK)
+// VALIDASI KONTEN PREDIKSI
 // ==========================================
 function validatePredictionContent(marketName, siteResults, siteUrls) {
     const issues = [];
-    
     const validSites = siteResults.filter(r => r.success && r.data.length > 0);
     const failedOrEmptySites = siteResults.filter(r => !r.success || r.data.length === 0);
 
     if (validSites.length === 0) return issues;
 
-    // Kumpulkan semua tanggal unik dari situs yang valid
     const allDates = new Set();
     validSites.forEach(res => res.data.forEach(item => allDates.add(item.date)));
 
@@ -190,35 +173,29 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
         const missingSites = entries.filter(e => !e.item && e.hasData);
         const failedSites = entries.filter(e => !e.success || !e.hasData);
 
-        // SKENARIO 0A: CEK FORMAT JUDUL (WAJIB ADA STRIP -)
+        // CEK FORMAT ERROR
         presentSites.forEach(ps => {
             if (ps.item.formatError) {
                 issues.push({
-                    market: marketName, 
-                    date: dateNorm, 
-                    culprit: ps.domain,
-                    status: 'FORMAT_ERROR',
-                    reference: `Judul Asli: "${ps.item.rawTitle}"`,
+                    market: marketName, date: dateNorm, culprit: ps.domain,
+                    status: 'FORMAT_ERROR', reference: `Judul: "${ps.item.rawTitle}"`,
                     detail: `FORMAT SALAH! ${ps.item.formatError}`
                 });
             }
         });
 
-        // SKENARIO 0B: CEK KONSISTENSI JUDUL VS DESKRIPSI
+        // CEK INCONSISTENCY
         presentSites.forEach(ps => {
             if (ps.item.consistencyError) {
                 issues.push({
-                    market: marketName, 
-                    date: dateNorm, 
-                    culprit: ps.domain,
-                    status: 'CONTENT_INCONSISTENT',
-                    reference: `Judul: "${ps.item.rawTitle}"`,
+                    market: marketName, date: dateNorm, culprit: ps.domain,
+                    status: 'CONTENT_INCONSISTENT', reference: `Judul: "${ps.item.rawTitle}"`,
                     detail: `TIDAK KONSISTEN! ${ps.item.consistencyError}`
                 });
             }
         });
 
-        // SKENARIO 1: Semua situs gagal fetch
+        // CEK MISSING DATA
         if (failedSites.length > 0 && presentSites.length === 0) {
             failedSites.forEach(fs => {
                 issues.push({
@@ -229,7 +206,6 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
             continue; 
         }
 
-        // SKENARIO 2: Minority Missing
         if (missingSites.length > 0 && presentSites.length >= (siteResults.length / 2)) {
             missingSites.forEach(ms => {
                 issues.push({
@@ -241,36 +217,30 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
             });
         }
 
-        // SKENARIO 3: CROSS-VALIDATION NAMA PASARAN (Menggunakan normMarket)
-        // Hanya bandingkan situs yang formatnya BENAR (tidak ada formatError)
-        const consistentSites = presentSites.filter(ps => !ps.item.formatError);
+        // CEK TITLE MISMATCH (Cross-validation antar situs)
+        const consistentSites = presentSites.filter(ps => !ps.item.formatError && !ps.item.consistencyError);
         
         if (consistentSites.length >= 2) {
-            const marketCounts = {};
+            const titleCounts = {};
             consistentSites.forEach(ps => {
-                marketCounts[ps.item.normMarket] = (marketCounts[ps.item.normMarket] || 0) + 1;
+                titleCounts[ps.item.rawTitle] = (titleCounts[ps.item.rawTitle] || 0) + 1;
             });
-            
-            const majorityMarket = Object.keys(marketCounts).reduce((a, b) => marketCounts[a] > marketCounts[b] ? a : b);
-            const majorityCount = marketCounts[majorityMarket];
+
+            const majorityTitle = Object.keys(titleCounts).reduce((a, b) => titleCounts[a] > titleCounts[b] ? a : b);
 
             consistentSites.forEach(ps => {
-                // Jika nama pasaran ternormalisasi beda dengan mayoritas
-                if (ps.item.normMarket !== majorityMarket) {
+                if (ps.item.rawTitle !== majorityTitle) {
                     issues.push({
-                        market: marketName, 
-                        date: dateNorm, 
-                        culprit: ps.domain,
-                        status: 'MARKET_NAME_MISMATCH',
-                        reference: `Standar Mayoritas: "${majorityMarket}" (${majorityCount}/${consistentSites.length} situs)`,
-                        detail: `NAMA PASARAN SALAH! Situs ini menulis: "${ps.item.marketName}" (Seharusnya sesuai standar mayoritas)`
+                        market: marketName, date: dateNorm, culprit: ps.domain,
+                        status: 'TITLE_MISMATCH',
+                        reference: `Judul Mayoritas: "${majorityTitle}"`,
+                        detail: `JUDUL TIDAK STANDAR! Situs ini menulis: "${ps.item.rawTitle}"`
                     });
                 }
             });
         }
     }
 
-    // SKENARIO 4: Situs Kosong Total
     failedOrEmptySites.forEach(fes => {
         if (validSites.length > 0) {
             issues.push({
@@ -288,57 +258,78 @@ function validatePredictionContent(marketName, siteResults, siteUrls) {
 // ENDPOINT UTAMA: /scan-predictions
 // ==========================================
 app.get('/scan-predictions', async (req, res) => {
-    const urls = Object.keys(req.query)
-        .filter(key => key.startsWith('url'))
-        .map(key => req.query[key])
-        .filter(Boolean)
-        .map(u => u.trim());
-    
-    if (urls.length < 2) {
-        return res.status(400).json({ status: 'error', message: 'Minimal 2 URL diperlukan (?url1=...&url2=...)' });
-    }
-
-    const MAX_LIMIT = 25;
-    if (urls.length > MAX_LIMIT) {
-        return res.status(400).json({ 
-            status: 'error', 
-            message: `Maksimal ${MAX_LIMIT} situs. Anda memasukkan ${urls.length}.` 
-        });
-    }
-
-    console.log(` Prediction Block Scan Started | ${urls.length} sites × 64 markets`);
-    const startTime = Date.now();
-    const allIssues = [];
-
-    for (const market of CANONICAL_MARKETS) {
-        console.log(`   Checking Predictions: ${market.name} (ID: ${market.id})...`);
-
-        const siteResults = await Promise.all(
-            urls.map(url => scrapePredictionPage(url, market.id))
-        );
-
-        const marketIssues = validatePredictionContent(market.name, siteResults, urls);
-        allIssues.push(...marketIssues);
+    try {
+        const urls = Object.keys(req.query)
+            .filter(key => key.startsWith('url'))
+            .map(key => req.query[key])
+            .filter(Boolean)
+            .map(u => u.trim());
         
-        await new Promise(r => setTimeout(r, 1200));
+        if (urls.length < 2) {
+            return res.status(400).json({ status: 'error', message: 'Minimal 2 URL diperlukan (?url1=...&url2=...)' });
+        }
+
+        const MAX_LIMIT = 25;
+        if (urls.length > MAX_LIMIT) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: `Maksimal ${MAX_LIMIT} situs. Anda memasukkan ${urls.length}.` 
+            });
+        }
+
+        console.log(` Prediction Block Scan Started | ${urls.length} sites × 64 markets`);
+        const startTime = Date.now();
+        const allIssues = [];
+
+        for (const market of CANONICAL_MARKETS) {
+            console.log(`   Checking Predictions: ${market.name} (ID: ${market.id})...`);
+
+            const siteResults = await Promise.all(
+                urls.map(url => scrapePredictionPage(url, market.id))
+            );
+
+            const marketIssues = validatePredictionContent(market.name, siteResults, urls);
+            allIssues.push(...marketIssues);
+            
+            await new Promise(r => setTimeout(r, 1200));
+        }
+
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+        res.json({
+            status: 'success',
+            execution_time_seconds: duration,
+            summary: {
+                scanned_sites: urls.map(u => getDomainName(u)),
+                markets_scanned: 64,
+                total_issues_found: allIssues.length,
+                is_fully_synced: allIssues.length === 0
+            },
+            errors: allIssues
+        });
+    } catch (err) {
+        console.error('CRITICAL ERROR:', err);
+        res.status(500).json({ status: 'error', message: 'Internal Server Error' });
     }
-
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
-    res.json({
-        status: 'success',
-        execution_time_seconds: duration,
-        summary: {
-            scanned_sites: urls.map(u => getDomainName(u)),
-            markets_scanned: 64,
-            total_issues_found: allIssues.length,
-            is_fully_synced: allIssues.length === 0
-        },
-        errors: allIssues 
-    });
 });
 
-app.get('/', (req, res) => res.json({ message: '🔮 Prediction Content Validator Ready!' }));
+// Health check endpoint untuk memastikan server hidup
+app.get('/', (req, res) => res.json({ message: '🔮 Cek Blok Prediksi API Online!' }));
 
+// ==========================================
+// PRODUCTION SERVER SETUP (ANTI GAGAL KONEK)
+// ==========================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🔥 Server running on port ${PORT}`);
+    console.log(`🌐 Local: http://localhost:${PORT}`);
+});
+
+// Global Error Handler agar Railway tidak crash
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
