@@ -55,7 +55,7 @@ const getDomainName = (url) => {
 
 /**
  * FUNGSI EKSTRAKSI DATA MENTAH DARI JUDUL & DESKRIPSI
- * Mengambil Nama Pasaran dan Tanggal secara terpisah untuk perbandingan ketat
+ * Hanya mengambil Nama Pasaran dan Tanggal untuk dibandingkan antar situs
  */
 function extractRawData(titleText, descText) {
     // Regex untuk menangkap: [NAMA PASARAN] [DD MMM YYYY]
@@ -117,10 +117,10 @@ async function scrapePredictionPage(baseUrl, marketId) {
 }
 
 // ==========================================
-// VALIDASI KOMPARATIF ANTAR SITUS (CROSS-SITE COMPARISON)
-// Membandingkan Nama Pasaran & Tanggal di Judul/Deskripsi antar semua situs
+// VALIDASI MURNI PERBANDINGAN ANTAR SITUS
+// Tidak ada validasi internal, hanya cross-site comparison
 // ==========================================
-function validateComparative(marketName, siteResults, siteUrls) {
+function validateCrossSiteComparison(marketName, siteResults, siteUrls) {
     const issues = [];
     const validSites = siteResults.filter(r => r.success && r.data.length > 0);
     const failedOrEmptySites = siteResults.filter(r => !r.success || r.data.length === 0);
@@ -187,33 +187,9 @@ function validateComparative(marketName, siteResults, siteUrls) {
                 }
             });
         }
-
-        // SKENARIO 3: CEK KONSISTENSI INTERNAL (Judul vs Deskripsi)
-        presentSites.forEach(ps => {
-            const item = ps.item;
-            let internalError = '';
-
-            // Cek apakah nama pasaran di deskripsi cocok dengan judul
-            if (item.descMarket && item.titleMarket.toUpperCase() !== item.descMarket.toUpperCase()) {
-                internalError = `Nama pasaran di Judul ("${item.titleMarket}") BEDA dengan Deskripsi ("${item.descMarket}")`;
-            } 
-            // Cek apakah tanggal di deskripsi cocok dengan judul
-            else if (item.descDate && item.titleDate.toUpperCase() !== item.descDate.toUpperCase()) {
-                internalError = `Tanggal di Judul ("${item.titleDate}") BEDA dengan Deskripsi ("${item.descDate}")`;
-            }
-
-            if (internalError) {
-                issues.push({
-                    market: marketName, date: dateStr, culprit: ps.domain,
-                    status: 'INTERNAL_INCONSISTENT',
-                    reference: `Judul: "${item.titleMarket} ${item.titleDate}"`,
-                    detail: `INKONSISTENSI! ${internalError}`
-                });
-            }
-        });
     }
 
-    // SKENARIO 4: SITUS KOSONG TOTAL
+    // SKENARIO 3: SITUS KOSONG TOTAL
     failedOrEmptySites.forEach(fes => {
         if (validSites.length > 0) {
             issues.push({
@@ -232,6 +208,7 @@ function validateComparative(marketName, siteResults, siteUrls) {
 // ==========================================
 app.get('/scan-predictions', async (req, res) => {
     try {
+        // Ambil semua query params yang berawalan 'url' secara dinamis
         const urls = Object.keys(req.query)
             .filter(key => key.startsWith('url'))
             .map(key => req.query[key])
@@ -250,20 +227,24 @@ app.get('/scan-predictions', async (req, res) => {
             });
         }
 
-        console.log(` Comparative Prediction Scan Started | ${urls.length} sites × 64 markets`);
+        console.log(` Pure Cross-Site Scan Started | ${urls.length} sites × 64 markets`);
         const startTime = Date.now();
         const allIssues = [];
 
+        // Loop berdasarkan Canonical Markets
         for (const market of CANONICAL_MARKETS) {
             console.log(`   Checking Predictions: ${market.name} (ID: ${market.id})...`);
 
+            // Fetch semua situs paralel untuk market ini
             const siteResults = await Promise.all(
                 urls.map(url => scrapePredictionPage(url, market.id))
             );
 
-            const marketIssues = validateComparative(market.name, siteResults, urls);
+            // Jalankan Validasi Murni Perbandingan Antar Situs
+            const marketIssues = validateCrossSiteComparison(market.name, siteResults, urls);
             allIssues.push(...marketIssues);
             
+            // Delay anti-blokir LiteSpeed
             await new Promise(r => setTimeout(r, 1200));
         }
 
@@ -286,7 +267,7 @@ app.get('/scan-predictions', async (req, res) => {
     }
 });
 
-app.get('/', (req, res) => res.json({ message: '🔮 Comparative Prediction Validator Ready!' }));
+app.get('/', (req, res) => res.json({ message: '🔮 Pure Cross-Site Prediction Validator Ready!' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
