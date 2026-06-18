@@ -54,48 +54,24 @@ const getDomainName = (url) => {
 };
 
 /**
- * FUNGSI EKSTRAKSI KETAT: HANYA NAMA PASARAN & TANGGAL
- * Mengambil dari Judul DAN Deskripsi, lalu membandingkannya.
+ * FUNGSI EKSTRAKSI DATA MENTAH DARI JUDUL & DESKRIPSI
+ * Mengambil Nama Pasaran dan Tanggal secara terpisah untuk perbandingan ketat
  */
-function extractStrictData(titleText, descText) {
-    // Regex untuk menangkap Nama Pasaran dan Tanggal
-    // Format umum: PREDIKSI TOGEL [NAMA PASARAN] [DD MMM YYYY] [BRAND]
-    const regex = /PREDIKSI\s+TOGEL\s+(.+?)\s+(\d{1,2}\s+[A-Z]{3}\s+\d{4})/i;
+function extractRawData(titleText, descText) {
+    // Regex untuk menangkap: [NAMA PASARAN] [DD MMM YYYY]
+    // Group 1: Nama Pasaran, Group 2: Tanggal
+    const regex = /(.+?)\s+(\d{1,2}\s+[A-Z]{3}\s+\d{4})/i;
     
     const titleMatch = titleText.match(regex);
+    const descMatch = descText.match(regex);
+
     if (!titleMatch) return null;
 
-    const rawMarketTitle = titleMatch[1].trim();
-    const rawDateTitle = titleMatch[2].trim();
-
-    // Cek juga di deskripsi untuk memastikan konsistensi internal
-    const descMatch = descText.match(regex);
-    const rawMarketDesc = descMatch ? descMatch[1].trim() : '';
-    const rawDateDesc = descMatch ? descMatch[2].trim() : '';
-
-    // Normalisasi untuk perbandingan lintas situs
-    // Ubah ke uppercase, ganti spasi dengan strip, hapus double strip
-    const normMarket = rawMarketTitle.toUpperCase().replace(/\s+/g, '-').replace(/--+/g, '-');
-    const normDate = rawDateTitle.toLowerCase().replace(/\s+/g, '').replace(/juni/g, 'jun').replace(/juli/g, 'jul').substring(0, 7);
-
-    // Deteksi inkonsistensi internal (Judul vs Deskripsi di situs yang sama)
-    let internalError = '';
-    const normMarketDesc = rawMarketDesc.toUpperCase().replace(/\s+/g, '-').replace(/--+/g, '-');
-    const normDateDesc = rawDateDesc.toLowerCase().replace(/\s+/g, '').replace(/juni/g, 'jun').replace(/juli/g, 'jul').substring(0, 7);
-
-    if (rawMarketDesc && normMarket !== normMarketDesc) {
-        internalError = `Nama pasaran di Judul ("${rawMarketTitle}") BEDA dengan Deskripsi ("${rawMarketDesc}")`;
-    } else if (rawDateDesc && normDate !== normDateDesc) {
-        internalError = `Tanggal di Judul ("${rawDateTitle}") BEDA dengan Deskripsi ("${rawDateDesc}")`;
-    }
-
     return {
-        rawTitle: titleText,
-        marketName: rawMarketTitle,
-        date: rawDateTitle,
-        normMarket: normMarket,
-        normDate: normDate,
-        internalError: internalError
+        titleMarket: titleMatch[1].trim(),
+        titleDate: titleMatch[2].trim(),
+        descMarket: descMatch ? descMatch[1].trim() : '',
+        descDate: descMatch ? descMatch[2].trim() : ''
     };
 }
 
@@ -121,13 +97,12 @@ async function scrapePredictionPage(baseUrl, marketId) {
         const $ = cheerio.load(res.data);
         const predictions = [];
 
-        // Selector berdasarkan struktur HTML prediksi
         $('div.flex.flex-col.items-center.gap-4.px-8.py-6').each((i, cardEl) => {
             const titleText = $(cardEl).find('h4 a').text().trim();
             const descText = $(cardEl).find('p.mt-1, p.text-sm').first().text().trim();
 
             if (titleText) {
-                const extracted = extractStrictData(titleText, descText);
+                const extracted = extractRawData(titleText, descText);
                 if (extracted) predictions.push(extracted);
             }
         });
@@ -142,48 +117,37 @@ async function scrapePredictionPage(baseUrl, marketId) {
 }
 
 // ==========================================
-// VALIDASI KETAT: PERBANDINGAN NAMA PASARAN & TANGGAL
+// VALIDASI KOMPARATIF ANTAR SITUS (CROSS-SITE COMPARISON)
+// Membandingkan Nama Pasaran & Tanggal di Judul/Deskripsi antar semua situs
 // ==========================================
-function validateStrictComparison(marketName, siteResults, siteUrls) {
+function validateComparative(marketName, siteResults, siteUrls) {
     const issues = [];
     const validSites = siteResults.filter(r => r.success && r.data.length > 0);
     const failedOrEmptySites = siteResults.filter(r => !r.success || r.data.length === 0);
 
     if (validSites.length === 0) return issues;
 
-    // Kumpulkan semua tanggal unik dari situs yang valid
+    // Kumpulkan semua tanggal unik dari judul situs yang valid
     const allDates = new Set();
-    validSites.forEach(res => res.data.forEach(item => allDates.add(item.normDate)));
+    validSites.forEach(res => res.data.forEach(item => allDates.add(item.titleDate)));
 
-    for (const dateNorm of allDates) {
+    for (const dateStr of allDates) {
         const entries = siteResults.map((res, idx) => ({
             domain: getDomainName(siteUrls[idx]),
             success: res.success,
             hasData: res.success && res.data.length > 0,
-            item: res.success ? res.data.find(d => d.normDate === dateNorm) : null
+            item: res.success ? res.data.find(d => d.titleDate === dateStr) : null
         }));
 
         const presentSites = entries.filter(e => e.item);
         const missingSites = entries.filter(e => !e.item && e.hasData);
         const failedSites = entries.filter(e => !e.success || !e.hasData);
 
-        // SKENARIO 0: CEK INKONSISTENSI INTERNAL (Judul vs Deskripsi)
-        presentSites.forEach(ps => {
-            if (ps.item.internalError) {
-                issues.push({
-                    market: marketName, date: dateNorm, culprit: ps.domain,
-                    status: 'INTERNAL_MISMATCH',
-                    reference: `Judul: "${ps.item.rawTitle}"`,
-                    detail: `INKONSISTENSI INTERNAL! ${ps.item.internalError}`
-                });
-            }
-        });
-
-        // SKENARIO 1: CEK MISSING DATA
+        // SKENARIO 1: CEK MISSING DATA (Tanggal tidak ada di situs tertentu)
         if (failedSites.length > 0 && presentSites.length === 0) {
             failedSites.forEach(fs => {
                 issues.push({
-                    market: marketName, date: dateNorm, culprit: fs.domain,
+                    market: marketName, date: dateStr, culprit: fs.domain,
                     status: 'FETCH_FAILED', detail: 'Situs ini gagal memuat halaman prediksi.'
                 });
             });
@@ -193,44 +157,63 @@ function validateStrictComparison(marketName, siteResults, siteUrls) {
         if (missingSites.length > 0 && presentSites.length >= (siteResults.length / 2)) {
             missingSites.forEach(ms => {
                 issues.push({
-                    market: marketName, date: dateNorm, culprit: ms.domain,
+                    market: marketName, date: dateStr, culprit: ms.domain,
                     status: 'CONTENT_MISSING',
                     reference: `${presentSites.length}/${siteResults.length} situs lain memiliki prediksi untuk tanggal ini`,
-                    detail: `Artikel prediksi untuk tanggal ${dateNorm} TIDAK DITEMUKAN.`
+                    detail: `Artikel prediksi untuk tanggal ${dateStr} TIDAK DITEMUKAN.`
                 });
             });
         }
 
-        // SKENARIO 2: PERBANDINGAN KETAT NAMA PASARAN ANTAR SITUS
-        // Hanya bandingkan jika tidak ada error internal
-        const consistentSites = presentSites.filter(ps => !ps.item.internalError);
-        
-        if (consistentSites.length >= 2) {
-            // Hitung frekuensi kemunculan normalized market name
+        // SKENARIO 2: CEK PERBEDAAN NAMA PASARAN DI JUDUL (COMPARATIVE CHECK)
+        if (presentSites.length >= 2) {
             const marketCounts = {};
-            consistentSites.forEach(ps => {
-                marketCounts[ps.item.normMarket] = (marketCounts[ps.item.normMarket] || 0) + 1;
+            presentSites.forEach(ps => {
+                const key = ps.item.titleMarket.toUpperCase();
+                marketCounts[key] = (marketCounts[key] || 0) + 1;
             });
 
-            // Cari nama pasaran yang paling banyak muncul (Mayoritas)
             const majorityMarket = Object.keys(marketCounts).reduce((a, b) => marketCounts[a] > marketCounts[b] ? a : b);
             const majorityCount = marketCounts[majorityMarket];
 
-            // Laporkan situs yang nama pasarnya BEDA dari mayoritas
-            consistentSites.forEach(ps => {
-                if (ps.item.normMarket !== majorityMarket) {
+            presentSites.forEach(ps => {
+                if (ps.item.titleMarket.toUpperCase() !== majorityMarket) {
                     issues.push({
-                        market: marketName, date: dateNorm, culprit: ps.domain,
-                        status: 'MARKET_NAME_MISMATCH',
-                        reference: `Standar Mayoritas: "${majorityMarket}" (${majorityCount}/${consistentSites.length} situs)`,
-                        detail: `NAMA PASARAN SALAH! Situs ini menulis: "${ps.item.marketName}" (Seharusnya sesuai standar mayoritas)`
+                        market: marketName, date: dateStr, culprit: ps.domain,
+                        status: 'TITLE_MARKET_MISMATCH',
+                        reference: `Standar Mayoritas: "${majorityMarket}" (${majorityCount}/${presentSites.length} situs)`,
+                        detail: `JUDUL SALAH! Nama pasaran "${ps.item.titleMarket}" berbeda dengan standar mayoritas.`
                     });
                 }
             });
         }
+
+        // SKENARIO 3: CEK KONSISTENSI INTERNAL (Judul vs Deskripsi)
+        presentSites.forEach(ps => {
+            const item = ps.item;
+            let internalError = '';
+
+            // Cek apakah nama pasaran di deskripsi cocok dengan judul
+            if (item.descMarket && item.titleMarket.toUpperCase() !== item.descMarket.toUpperCase()) {
+                internalError = `Nama pasaran di Judul ("${item.titleMarket}") BEDA dengan Deskripsi ("${item.descMarket}")`;
+            } 
+            // Cek apakah tanggal di deskripsi cocok dengan judul
+            else if (item.descDate && item.titleDate.toUpperCase() !== item.descDate.toUpperCase()) {
+                internalError = `Tanggal di Judul ("${item.titleDate}") BEDA dengan Deskripsi ("${item.descDate}")`;
+            }
+
+            if (internalError) {
+                issues.push({
+                    market: marketName, date: dateStr, culprit: ps.domain,
+                    status: 'INTERNAL_INCONSISTENT',
+                    reference: `Judul: "${item.titleMarket} ${item.titleDate}"`,
+                    detail: `INKONSISTENSI! ${internalError}`
+                });
+            }
+        });
     }
 
-    // SKENARIO 3: SITUS KOSONG TOTAL
+    // SKENARIO 4: SITUS KOSONG TOTAL
     failedOrEmptySites.forEach(fes => {
         if (validSites.length > 0) {
             issues.push({
@@ -249,7 +232,6 @@ function validateStrictComparison(marketName, siteResults, siteUrls) {
 // ==========================================
 app.get('/scan-predictions', async (req, res) => {
     try {
-        // Ambil semua query params yang berawalan 'url' secara dinamis
         const urls = Object.keys(req.query)
             .filter(key => key.startsWith('url'))
             .map(key => req.query[key])
@@ -268,24 +250,20 @@ app.get('/scan-predictions', async (req, res) => {
             });
         }
 
-        console.log(` Strict Prediction Scan Started | ${urls.length} sites × 64 markets`);
+        console.log(` Comparative Prediction Scan Started | ${urls.length} sites × 64 markets`);
         const startTime = Date.now();
         const allIssues = [];
 
-        // Loop berdasarkan Canonical Markets
         for (const market of CANONICAL_MARKETS) {
             console.log(`   Checking Predictions: ${market.name} (ID: ${market.id})...`);
 
-            // Fetch semua situs paralel untuk market ini
             const siteResults = await Promise.all(
                 urls.map(url => scrapePredictionPage(url, market.id))
             );
 
-            // Jalankan Validasi Ketat
-            const marketIssues = validateStrictComparison(market.name, siteResults, urls);
+            const marketIssues = validateComparative(market.name, siteResults, urls);
             allIssues.push(...marketIssues);
             
-            // Delay anti-blokir LiteSpeed
             await new Promise(r => setTimeout(r, 1200));
         }
 
@@ -308,23 +286,12 @@ app.get('/scan-predictions', async (req, res) => {
     }
 });
 
-// Health check endpoint
-app.get('/', (req, res) => res.json({ message: '🔮 Strict Prediction Validator API Online!' }));
+app.get('/', (req, res) => res.json({ message: '🔮 Comparative Prediction Validator Ready!' }));
 
-// ==========================================
-// PRODUCTION SERVER SETUP
-// ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🔥 Server running on port ${PORT}`);
-    console.log(`🌐 Local: http://localhost:${PORT}`);
 });
 
-// Global Error Handler agar Railway tidak crash
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
+process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
+process.on('unhandledRejection', (reason, promise) => console.error('Unhandled Rejection at:', promise, 'reason:', reason));
